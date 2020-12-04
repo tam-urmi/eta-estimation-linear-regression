@@ -1,0 +1,258 @@
+
+CREATE TEMPORARY FUNCTION
+  s2id(lat FLOAT64,
+    lng FLOAT64,
+    level FLOAT64)
+  RETURNS STRING
+  LANGUAGE js AS """
+if ((lat === null) || (lng === null)){
+return null;
+}
+return latLngToId(lat,lng,level);
+"""
+OPTIONS
+  (library="gs://bi_cloud_storage_ees6see6/public/lib/s2geometry.js");
+  
+CREATE TEMPORARY FUNCTION s2id_parent(s2id STRING,parent_level FLOAT64)
+RETURNS STRING
+LANGUAGE js AS """
+if (s2id === null){
+return null;
+}
+return idToParent(s2id, parent_level);
+"""
+OPTIONS (library="gs://bi_cloud_storage_ees6see6/public/lib/s2geometry.js");
+
+CREATE TEMP FUNCTION GenerateHourTimestampArray(
+    t0 TIMESTAMP, t1 TIMESTAMP, hour INT64) AS (
+  ARRAY(
+    SELECT TIMESTAMP_ADD(t0, INTERVAL hour * x HOUR)
+    FROM UNNEST(GENERATE_ARRAY(0, TIMESTAMP_DIFF(timestamp_add(t1,interval 1 day), t0, HOUR))) AS x
+  )
+);
+
+CREATE TEMP FUNCTION DistGroup(dist_to_dest float64) 
+     AS 
+    (case
+        when <redacted> then "group_0"
+        when <redacted> then "group_1"
+        when <redacted> then "group_2"
+        when <redacted> then "group_3"
+        when <redacted> then "group_4"
+        when <redacted> then "group_5"
+        when <redacted> then "group_6"
+        when <redacted> then "group_7"
+        when <redacted> then "group_8"
+        else "group_null"
+        end);
+
+with ref_date as (select timestamp<redacted> as rf_date),
+
+      declare_date as(
+          select
+            rf_date as start0_date,
+            timestamp<redacted> as end0_date,
+            timestamp_sub(rf_date, interval 30 day) as start2_date
+          from ref_date
+          ),  
+     
+      all_data_date as(
+          SELECT
+            *
+          FROM 
+            UNNEST(GENERATE_DATE_ARRAY(
+                    (select date(start0_date) from declare_date), 
+                    (select date(end0_date) from declare_date), 
+                INTERVAL 1 DAY)) AS current_date0
+          ),
+                
+      all_data_hour as(
+          SELECT
+            *
+          FROM 
+            UNNEST(GenerateHourTimestampArray(
+                    (select start0_date from declare_date), 
+                    (select end0_date from declare_date),1)) AS current_hour0
+          ),
+
+      driver_arrived as (
+          select order_number,
+          st_geogpoint( driver_arrived_location.longitude, driver_arrived_location.latitude) as arrival_geog
+                 ,st_geogpoint(driver_arrived_location.longitude, driver_arrived_location.latitude) as merchant_arrival_geog
+                 ,st_geogpoint(driver_dropoff_location.longitude, driver_dropoff_location.latitude) as destination_arrival_geog
+          from `bi-gojek.<redacted>`,declare_date
+          where event_timestamp between start0_date and end0_date
+          and <redacted>
+          ),
+        
+      driver_otp_time as (
+          select order_number,
+          event_timestamp otp_time       
+          from `bi-gojek.<redacted>`,declare_date
+          where event_timestamp between start0_date and end0_date
+          and <redacted>
+          ),
+
+mafcorrected_t2 as (
+  select *
+  from (
+  select order_no, a.merchant_id, booking_date, service_area_id,
+    service_area_name, booking_time, extract(hour from timestamp_add(a.booking_time, interval <redacted>+7 hour)) as adjusted_booking_hour,
+    format_date('%A', date(timestamp_add(booking_time, interval 7 hour))) as booking_day,
+    case when <redacted> actual_t2_second_mafcorrected,
+    d.primary_cuisine, 
+    <redacted>
+  from `bi-gojek.<redacted>` a, ref_date
+  left join `bi-gojek.<redacted>` d on a.merchant_id = d.merchant_id
+  left join `bi-gojek.<redacted>` c on a.service_area_id = c.id
+  left join driver_arrived b on a.order_no = b.order_number
+ <redacted>
+  ),
+  
+order_only as (
+  select datetime(booking_time,"Asia/Jakarta") book_time
+    , order_no
+    , merchant_id
+    , booking_date
+    , timestamp_diff(pickup_time, driver_arrived_at_restaurant_timestamp, second) actual_t2_second
+    , cast(format_datetime('%H', datetime(booking_time,"Asia/Jakarta")) as int64) as booking_hour
+    , driver_to_pickup_distance_km dist_to_merch
+    , ROW_NUMBER() 
+    OVER(PARTITION BY booking_date,format_datetime('%H', datetime(booking_time,"Asia/Jakarta")), merchant_id ORDER BY booking_time DESC) ids_by_hour
+    , normalized_gmv
+  from `bi-gojek.<redacted>` d1,declare_date
+  where _PARTITIONTIME between start2_date and end0_date
+  and <redacted>),
+  
+order_same_hour_last1m as (
+  select o1.current_date0
+    ,merchant_id
+    ,booking_hour
+    ,count(distinct o2.order_no) merch_demand_same_hour_1m
+    ,avg(o2.normalized_gmv) avg_gmv_same_hour_merchant_1m
+    ,avg(o2.actual_t2_second) avg_t2_same_hour_merchant_1m
+    ,stddev(o2.actual_t2_second) std_t2_same_hour_merchant_1m
+  from all_data_date o1, order_only o2
+  where date_diff(o1.current_date0, o2.booking_date, day) between 1 and 30  
+  group by 1,2,3),
+      
+order_merch_last_3hour as (
+  select date(o1.current_hour0) current_date0
+    ,cast(format_timestamp('%H', o1.current_hour0) as int64) as curr_booking_hour
+    ,merchant_id
+    ,count(distinct o2.order_no) merch_demand_3h
+    ,avg(o2.normalized_gmv) avg_gmv_merchant_3h
+    ,avg(o2.actual_t2_second) avg_t2_merchant_3h        
+  from all_data_hour o1, order_only o2
+  where datetime_diff(datetime(o1.current_hour0), o2.book_time, minute) between 1 and 3*60  
+  group by 1,2,3
+  ),
+        
+order_merch_last_1d as (
+  select o1.current_date0
+    ,merchant_id
+    ,count(distinct o2.order_no) merch_demand_1d
+    ,avg(o2.normalized_gmv) avg_gmv_merchant_1d
+    ,avg(o2.actual_t2_second) avg_t2_merchant_1d
+  from all_data_date o1, order_only o2
+  where date_diff(o1.current_date0, o2.booking_date, day) = 1  
+  group by 1,2
+  ),
+
+order_merch_last_1w as (
+  select o1.current_date0
+    ,merchant_id
+    ,count(distinct o2.order_no) merch_demand_1w
+    ,avg(o2.normalized_gmv) avg_gmv_merchant_1w
+    ,avg(o2.actual_t2_second) avg_t2_merchant_1w        
+  from all_data_date o1, order_only o2
+  where date_diff(o1.current_date0, o2.booking_date, day) between 1 and 7   
+  group by 1,2
+  ),
+        
+  order_merch_last_3d as (
+  select o1.current_date0
+    ,merchant_id
+    ,count(distinct o2.order_no) merch_demand_3d
+    ,avg(o2.actual_t2_second) avg_t2_merchant_3d        
+  from all_data_date o1, order_only o2
+  where <redacted>   
+  group by 1,2
+  ),
+        
+order_merch_last_1m as (
+  SELECT 
+    o2.merchant_id, 
+    AVG(o2.actual_t2_second) avg_t2_merchant_1m,  
+  FROM
+    order_only o2, all_data_date o1 
+  JOIN `bi-gojek.<redacted>` d2 USING(order_no)
+  WHERE <redacted>  
+  GROUP BY 1),
+            
+all_suspends_last_1mo as (
+  select target_id, target_type
+  from `bi-gojek.<redacted>`,declare_date
+  where event_timestamp between start2_date and start0_date
+  and (lower(action_name) <redacted>,
+      
+all_suspends_customer_last_1mo as (
+  select distinct target_id
+  from all_suspends_last_1mo
+  where target_type = 'customer'),
+    
+all_suspends_driver_last_1mo as (
+  select distinct target_id
+  from all_suspends_last_1mo
+  where target_type = 'driver'),
+
+all_suspends_merchant_last_1mo as (
+  select distinct target_id
+  from all_suspends_last_1mo
+  where target_type = 'merchant')
+
+select 
+  distinct d1.order_no
+ ,d1.booking_date
+ ,datetime(d1.booking_time,"Asia/Jakarta") book_time
+ ,cast(format_datetime('%H', datetime(d1.booking_time,"Asia/Jakarta")) as int64) as booking_hour
+ ,d1.service_area_id
+ ,d1.merchant_id
+ ,if(poi_name is null,0,1) as is_merchant_in_poi
+ ,merchant_acceptance_flag
+ ,merchant_auto_accept_flag
+ ,merchant_goresto_flag
+ ,r2.classification
+ ,r15.actual_t2_second_mafcorrected
+ ,r8.* except (current_date0,merchant_id,booking_hour)
+ ,r10.* except (current_date0,merchant_id,curr_booking_hour)
+ ,r11.* except (current_date0,merchant_id)
+ ,r12.* except (current_date0,merchant_id)
+ ,r13.* except (current_date0,merchant_id)
+ ,r14.* except (merchant_id)
+from `bi-gojek.<redacted>` d1,declare_date
+join `bi-gojek.<redacted>` d2 USING(order_no)
+left join `bi-gojek.<redacted>` r1 on r1.id=d1.merchant_id
+left join `bi-gojek.<redacted>` r2 on r2.merchant_id=d1.merchant_id
+left join driver_arrived r3 on d1.order_no=r3.order_number
+left join all_suspends_driver_last_1mo r5 on cast(d1.driver_id as string) = r5.target_id
+left join all_suspends_merchant_last_1mo r6 on cast(d1.merchant_id as string) = r6.target_id
+left join all_suspends_customer_last_1mo r7 on cast(d1.customer_id as string) = r7.target_id
+left join order_same_hour_last1m r8 on r8.current_date0=d1.booking_date
+    and r8.merchant_id=d1.merchant_id
+    and r8.booking_hour=cast(format_datetime('%H', datetime(d1.booking_time,"Asia/Jakarta")) as int64)
+left join order_merch_last_3hour r10 on r10.current_date0=d1.booking_date
+    and r10.merchant_id=d1.merchant_id
+    and r10.curr_booking_hour=cast(format_datetime('%H', datetime(d1.booking_time,"Asia/Jakarta")) as int64)
+left join order_merch_last_1d r11 on r11.current_date0=d1.booking_date
+    and r11.merchant_id=d1.merchant_id
+left join order_merch_last_1w r12 on r12.current_date0=d1.booking_date
+    and r12.merchant_id=d1.merchant_id
+left join order_merch_last_3d r13 on r13.current_date0=d1.booking_date
+    and r13.merchant_id=d1.merchant_id
+left join order_merch_last_1m r14 on r14.merchant_id = d1.merchant_id
+left join mafcorrected_t2 r15 on r15.order_no = d1.order_no
+where _PARTITIONTIME between start0_date and end0_date
+    and <redacted>
+
+  
